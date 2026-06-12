@@ -203,9 +203,7 @@ query($owner: String!, $name: String!) {
 // `gh api graphql` exits non-zero when the response contains any GraphQL
 // error (e.g. one stale PR number in an otherwise-fine batch), but still
 // prints the partial data. Salvage it.
-async function runGraphqlAllowingPartialErrors(
-  query: string
-): Promise<string> {
+async function runGraphqlAllowingPartialErrors(query: string): Promise<string> {
   try {
     return await execFileAsync('gh', [
       'api',
