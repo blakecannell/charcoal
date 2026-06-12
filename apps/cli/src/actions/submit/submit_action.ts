@@ -11,7 +11,12 @@ import {
   footerFooter,
   footerTitle,
 } from '../create_pr_body_footer';
-import { execFileSync } from 'child_process';
+import { getRejectedBranchesFromPushError } from '../../lib/git/push_branch';
+import { execFileAsync, runWithLimit } from '../../lib/utils/exec_async';
+
+// Concurrent gh invocations are capped to stay clear of GitHub's
+// secondary rate limits — same call volume as before, tighter spacing.
+const MAX_CONCURRENT_GH_CALLS = 4;
 
 // eslint-disable-next-line max-lines-per-function
 export async function submitAction(
@@ -37,7 +42,6 @@ export async function submitAction(
       `Can't use both --publish and --draft flags in one command`
     );
   }
-  const populateRemoteShasPromise = context.engine.populateRemoteShas();
   if (args.dryRun) {
     context.splog.info(
       chalk.yellow(
@@ -76,14 +80,21 @@ export async function submitAction(
     )
   );
   context.splog.newline();
-  await validateBranchesToSubmit(branchNames, context);
+  // The remote ref fetch and the PR info sync are the two big network
+  // reads — start the former here so they run concurrently inside
+  // validateBranchesToSubmit, after the user has already seen output.
+  const populateRemoteShasPromise = context.engine.populateRemoteShas();
+  await validateBranchesToSubmit(
+    branchNames,
+    context,
+    populateRemoteShasPromise
+  );
 
   context.splog.info(
     chalk.blueBright(
       '✏️  Preparing to submit PRs for the following branches...'
     )
   );
-  await populateRemoteShasPromise;
   const submissionInfos = await getPRInfoForBranches(
     {
       branchNames: branchNames,
@@ -108,64 +119,95 @@ export async function submitAction(
     return;
   }
 
+  const branchesToPush = submissionInfos.map((info) => info.head);
   context.splog.info(
-    chalk.blueBright('📨 Pushing to remote and creating/updating PRs...')
+    chalk.blueBright(
+      `📨 Pushing ${branchesToPush.length} ${
+        branchesToPush.length === 1 ? 'branch' : 'branches'
+      } to remote...`
+    )
   );
 
-  for (const submissionInfo of submissionInfos) {
-    try {
-      context.engine.pushBranch(submissionInfo.head, args.forcePush);
-    } catch (err) {
-      if (
-        err instanceof CommandFailedError &&
-        err.message.includes('stale info')
-      ) {
-        throw new ExitFailedError(
-          [
-            `Force-with-lease push of ${chalk.yellow(
-              submissionInfo.head
-            )} failed due to external changes to the remote branch.`,
-            'If you are collaborating on this stack, try `gt downstack get` to pull in changes.',
-            'Alternatively, use the `--force` option of this command to bypass the stale info warning.',
-          ].join('\n')
-        );
-      }
-      throw err;
+  try {
+    // One git invocation for the whole stack: one connection, one pack.
+    context.engine.pushBranches(branchesToPush, args.forcePush);
+  } catch (err) {
+    if (
+      err instanceof CommandFailedError &&
+      err.message.includes('stale info')
+    ) {
+      const rejectedBranches = getRejectedBranchesFromPushError(err.message);
+      const rejectedDescription = rejectedBranches.length
+        ? rejectedBranches.map((b) => chalk.yellow(b)).join(', ')
+        : chalk.yellow(branchesToPush.join(', '));
+      throw new ExitFailedError(
+        [
+          `Force-with-lease push of ${rejectedDescription} failed due to external changes to the remote branch${
+            rejectedBranches.length === 1 ? '' : 'es'
+          }.`,
+          ...(rejectedBranches.length > 0 &&
+          rejectedBranches.length < branchesToPush.length
+            ? ['All other branches in the submission were pushed.']
+            : []),
+          'If you are collaborating on this stack, try `gt downstack get` to pull in changes.',
+          'Alternatively, use the `--force` option of this command to bypass the stale info warning.',
+        ].join('\n')
+      );
     }
-
-    await submitPullRequest([submissionInfo], context);
+    throw err;
   }
+
+  context.splog.info(
+    chalk.blueBright(
+      `🔁 Creating/updating ${submissionInfos.length} PR${
+        submissionInfos.length === 1 ? '' : 's'
+      } on GitHub...`
+    )
+  );
+
+  // Each branch's PR is independent once everything is pushed; run them
+  // concurrently. Result lines print as each one settles.
+  await runWithLimit(
+    submissionInfos.map(
+      (submissionInfo) => () => submitPullRequest([submissionInfo], context)
+    ),
+    MAX_CONCURRENT_GH_CALLS
+  );
 
   context.splog.info(
     chalk.blueBright('\n🌳 Updating dependency trees in PR bodies...')
   );
 
-  for (const branch of branchNames) {
-    const prInfo = context.engine.getPrInfo(branch);
-    const footer = createPrBodyFooter(context, branch);
+  await runWithLimit(
+    branchNames.map((branch) => async () => {
+      const prInfo = context.engine.getPrInfo(branch);
+      const footer = createPrBodyFooter(context, branch);
 
-    if (!prInfo) {
-      throw new Error(`PR info is undefined for branch ${branch}`);
-    }
+      if (!prInfo) {
+        throw new Error(`PR info is undefined for branch ${branch}`);
+      }
 
-    const prFooterChanged = !prInfo.body?.includes(footer);
+      const prFooterChanged = !prInfo.body?.includes(footer);
 
-    if (prFooterChanged) {
-      execFileSync('gh', [
-        'pr',
-        'edit',
-        `${prInfo.number}`,
-        '--body',
-        updatePrBodyFooter(prInfo.body, footer),
-      ]);
+      if (prFooterChanged) {
+        await execFileAsync('gh', [
+          'pr',
+          'edit',
+          `${prInfo.number}`,
+          '--body',
+          updatePrBodyFooter(prInfo.body, footer),
+        ]);
+      }
 
+      // Print for no-op branches too, so the final phase never looks hung.
       context.splog.info(
         `${chalk.green(branch)}: ${prInfo.url} (${
           prFooterChanged ? chalk.yellow('Updated') : 'No-op'
         })`
       );
-    }
-  }
+    }),
+    MAX_CONCURRENT_GH_CALLS
+  );
 
   if (!context.interactive) {
     return;

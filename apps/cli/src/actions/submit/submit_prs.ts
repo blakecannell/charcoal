@@ -4,7 +4,7 @@ import chalk from 'chalk';
 import { TContext } from '../../lib/context';
 import { ExitFailedError } from '../../lib/errors';
 import { Unpacked } from '../../lib/utils/ts_helpers';
-import { execFileSync } from 'child_process';
+import { execFileAsync } from '../../lib/utils/exec_async';
 
 export type TPRSubmissionInfo = t.UnwrapSchemaMap<
   typeof API_ROUTES.submitPullRequests.params
@@ -91,14 +91,14 @@ async function submitPrToGithub({
   request: TSubmittedPRRequest;
 }): Promise<TSubmittedPRResponse> {
   try {
-    const prInfo = await JSON.parse(
-      execFileSync('gh', [
+    const prInfo = JSON.parse(
+      await execFileAsync('gh', [
         'pr',
         'view',
         request.head,
         '--json',
         'headRefName,url,number,baseRefName,body',
-      ]).toString()
+      ])
     );
 
     if (prInfo.headRefName !== request.head) {
@@ -110,7 +110,7 @@ async function submitPrToGithub({
     const prBaseChanged = prInfo.baseRefName !== request.base;
 
     if (prBaseChanged) {
-      execFileSync('gh', [
+      await execFileAsync('gh', [
         'pr',
         'edit',
         prInfo.headRefName,
@@ -130,21 +130,21 @@ async function submitPrToGithub({
       error instanceof Error &&
       error.message.includes('no pull requests found')
     ) {
-      const result = execFileSync('gh', [
-        'pr',
-        'create',
-        '--head',
-        request.head,
-        '--base',
-        request.base,
-        '--title',
-        request.title ?? '',
-        '--body',
-        request.body ?? '',
-        ...(request.draft ? ['--draft'] : []),
-      ])
-        .toString()
-        .trim();
+      const result = (
+        await execFileAsync('gh', [
+          'pr',
+          'create',
+          '--head',
+          request.head,
+          '--base',
+          request.base,
+          '--title',
+          request.title ?? '',
+          '--body',
+          request.body ?? '',
+          ...(request.draft ? ['--draft'] : []),
+        ])
+      ).trim();
 
       const prNumber = getPrNumberFromUrl(result);
 

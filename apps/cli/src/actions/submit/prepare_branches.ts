@@ -43,6 +43,9 @@ export async function getPRInfoForBranches(
   context: TContext
 ): Promise<TPRSubmissionInfo> {
   const submissionInfo: TPRSubmissionInfo = [];
+  // One auth check up front — previously this ran a network-validating
+  // `gh auth status` per branch inside the loop.
+  const isGithubAuthPresent = cliAuthPrecondition(context);
   for await (const branchName of args.branchNames) {
     const action = await getPRAction(
       {
@@ -64,8 +67,6 @@ export async function getPRInfoForBranches(
     const parentBranchName = context.engine.getParentPrecondition(
       action.branchName
     );
-
-    const isGithubAuthPresent = cliAuthPrecondition(context);
 
     const prCreationInfo =
       isGithubAuthPresent && !action.update

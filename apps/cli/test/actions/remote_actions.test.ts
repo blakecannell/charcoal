@@ -17,15 +17,36 @@ for (const scene of [new CloneScene()]) {
       scene.repo.runCliCommand([`branch`, `create`, `1`, `-am`, `1`]);
       expect(scene.repo.currentBranchName()).to.equal('1');
 
-      composeGit().pushBranch({
+      composeGit().pushBranches({
         remote: 'origin',
-        branchName: '1',
+        branchNames: ['1'],
         noVerify: false,
         forcePush: false,
       });
 
       expect(scene.repo.getRef('refs/heads/1')).to.equal(
         scene.originRepo.getRef('refs/heads/1')
+      );
+    });
+
+    it('can push multiple branches to remote in one invocation', async () => {
+      scene.repo.createChange('1');
+      scene.repo.runCliCommand([`branch`, `create`, `1`, `-am`, `1`]);
+      scene.repo.createChange('2');
+      scene.repo.runCliCommand([`branch`, `create`, `2`, `-am`, `2`]);
+
+      composeGit().pushBranches({
+        remote: 'origin',
+        branchNames: ['1', '2'],
+        noVerify: false,
+        forcePush: false,
+      });
+
+      expect(scene.repo.getRef('refs/heads/1')).to.equal(
+        scene.originRepo.getRef('refs/heads/1')
+      );
+      expect(scene.repo.getRef('refs/heads/2')).to.equal(
+        scene.originRepo.getRef('refs/heads/2')
       );
     });
 
@@ -41,9 +62,9 @@ for (const scene of [new CloneScene()]) {
       );
 
       expect(() =>
-        composeGit().pushBranch({
+        composeGit().pushBranches({
           remote: 'origin',
-          branchName: '1',
+          branchNames: ['1'],
           noVerify: false,
           forcePush: false,
         })
