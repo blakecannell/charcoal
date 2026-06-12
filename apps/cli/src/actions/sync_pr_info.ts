@@ -16,7 +16,8 @@ export async function syncPrInfo(
     branchNames.map((branchName) => ({
       branchName,
       prNumber: context.engine.getPrInfo(branchName)?.number,
-    }))
+    })),
+    { warn: (message) => context.splog.warn(message) }
   );
 
   upsertPrInfoForBranches(upsertInfo, context.engine);

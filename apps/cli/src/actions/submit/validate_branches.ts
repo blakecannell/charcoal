@@ -5,11 +5,19 @@ import { syncPrInfo } from '../sync_pr_info';
 
 export async function validateBranchesToSubmit(
   branchNames: string[],
-  context: TContext
+  context: TContext,
+  populateRemoteShasPromise: Promise<void>
 ): Promise<string[]> {
+  context.splog.info(
+    chalk.dim('Fetching remote refs and PR info from GitHub...')
+  );
+  // The two network reads (ls-remote + batched PR lookup) run concurrently.
   const syncPrInfoPromise = syncPrInfo(branchNames, context);
 
   try {
+    // validateBaseRevisions consults branchMatchesRemote, which needs the
+    // remote SHAs to be populated.
+    await populateRemoteShasPromise;
     validateBaseRevisions(branchNames, context);
     await validateNoEmptyBranches(branchNames, context);
   } catch (err) {
